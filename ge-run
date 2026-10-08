@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """ge-run: claim/release Games Explained game runs via Discord.
 
-Prevents two agents from working the same game at once. Posts machine-readable
+Prevents two agents from working the same game at once. Posts human-readable
 claim markers to a Discord channel; `claim` refuses if the game is taken.
+Matching is done on a normalized form, so "Classic Adventure" and
+"classic adventure" count as the same game.
 
 Talks to the Discord REST API directly (stdlib only, no dependencies).
 
@@ -13,7 +15,7 @@ Usage:
   ge-run status [game]                  show active claims
 
 Env:
-  GE_AGENT           agent name (default: Bob)
+  GE_AGENT           agent name (default from local config, else Bob)
   GE_CLAIMS_CHANNEL  Discord channel id for claims
                      (default: #game-claims 1557564764165636186)
   DISCORD_BOT_TOKEN  bot token (or stored via `ge-run init`)
@@ -33,24 +35,43 @@ GE_SERVER = "1552311170780766208"
 CFG_DIR = os.path.expanduser("~/.config/discord-cli")
 CREDS_PATH = os.path.join(CFG_DIR, "credentials.json")
 
-CLAIM_RE = re.compile(r"^🔒 CLAIM (\S+) — started by (.+)$")
-DONE_RE = re.compile(r"^🔓 DONE (\S+) — finished by (.+)$")
+CLAIM_RE = re.compile(r"^🔒 CLAIM (.+?) — started by (.+)$")
+DONE_RE = re.compile(r"^🔓 DONE (.+?) — finished by (.+)$")
 
 
 def norm(game: str) -> str:
-    g = game.strip().lower().replace(" ", "-").replace("_", "-")
-    return re.sub(r"[^a-z0-9-]", "", g)
+    """Internal matching key: lowercase, alphanumerics only."""
+    return re.sub(r"[^a-z0-9]", "", game.strip().lower())
+
+
+def display(game: str) -> str:
+    """Human-readable name, as typed (whitespace tidied)."""
+    return re.sub(r"\s+", " ", game.strip())
+
+
+def load_cfg() -> dict:
+    try:
+        with open(CREDS_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def token() -> str:
     t = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
     if t:
         return t
-    try:
-        with open(CREDS_PATH) as f:
-            return json.load(f).get("botToken", "").strip()
-    except (OSError, ValueError):
-        return ""
+    return load_cfg().get("botToken", "").strip()
+
+
+def default_agent() -> str:
+    return os.environ.get("GE_AGENT", "").strip() or load_cfg().get("agent", "Bob")
+
+
+def render_agent(agent: str) -> str:
+    """@mention the agent if the local config maps them to a Discord user id."""
+    uid = load_cfg().get("mentions", {}).get(agent)
+    return f"<@{uid}>" if uid else agent
 
 
 def api(method: str, path: str, body: dict | None = None) -> dict | list:
@@ -77,7 +98,7 @@ def api(method: str, path: str, body: dict | None = None) -> dict | list:
 
 
 def active_claims(limit: int = 100) -> dict:
-    """game -> (agent, timestamp) for claims with no later DONE (newest first)."""
+    """norm-key -> (display name, agent, timestamp) for claims with no later DONE."""
     msgs = api("GET", f"/channels/{CHANNEL}/messages?limit={limit}")
     claimed: dict = {}
     released: set = set()
@@ -85,53 +106,55 @@ def active_claims(limit: int = 100) -> dict:
         content = m.get("content", "")
         mc = CLAIM_RE.match(content)
         if mc:
-            game = norm(mc.group(1))
-            if game not in released:
-                claimed.setdefault(game, (mc.group(2), m.get("timestamp", "")))
+            key = norm(mc.group(1))
+            if key not in released:
+                claimed.setdefault(key, (display(mc.group(1)), mc.group(2),
+                                         m.get("timestamp", "")))
             continue
         md = DONE_RE.match(content)
         if md:
-            game = norm(md.group(1))
-            released.add(game)
-            claimed.pop(game, None)
+            key = norm(md.group(1))
+            released.add(key)
+            claimed.pop(key, None)
     return claimed
 
 
 def cmd_claim(game: str, agent: str) -> None:
-    game = norm(game)
+    name = display(game)
+    key = norm(game)
     claims = active_claims()
-    if game in claims:
-        other, ts = claims[game]
-        if other == agent:
+    if key in claims:
+        dname, other, ts = claims[key]
+        if other in (agent, render_agent(agent)):
             print(f"already claimed by you ({agent}); continuing")
             return
-        print(f"REFUSED: {game} is already claimed by {other} ({ts})",
+        print(f"REFUSED: {dname} is already claimed by {other} ({ts})",
               file=sys.stderr)
         sys.exit(1)
     api("POST", f"/channels/{CHANNEL}/messages",
-        {"content": f"🔒 CLAIM {game} — started by {agent}"})
-    print(f"claimed {game} as {agent}")
+        {"content": f"🔒 CLAIM {name} — started by {render_agent(agent)}"})
+    print(f"claimed {name} as {agent}")
 
 
 def cmd_done(game: str, agent: str) -> None:
-    game = norm(game)
+    name = display(game)
     api("POST", f"/channels/{CHANNEL}/messages",
-        {"content": f"🔓 DONE {game} — finished by {agent}"})
-    print(f"released {game}")
+        {"content": f"🔓 DONE {name} — finished by {render_agent(agent)}"})
+    print(f"released {name}")
 
 
 def cmd_status(game: str | None) -> None:
     claims = active_claims()
     if game:
-        game = norm(game)
-        if game in claims:
-            agent, ts = claims[game]
-            print(f"{game}: claimed by {agent} ({ts})")
+        key = norm(game)
+        if key in claims:
+            name, agent, ts = claims[key]
+            print(f"{name}: claimed by {agent} ({ts})")
         else:
-            print(f"{game}: free")
+            print(f"{display(game)}: free")
     elif claims:
-        for g, (agent, ts) in sorted(claims.items()):
-            print(f"{g}: {agent} ({ts})")
+        for _, (name, agent, ts) in sorted(claims.items()):
+            print(f"{name}: {agent} ({ts})")
     else:
         print("no active claims")
 
@@ -141,8 +164,10 @@ def cmd_init() -> None:
     tok = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
     if not tok:
         tok = input("bot token: ").strip()
+    cfg = load_cfg()
+    cfg["botToken"] = tok
     with open(CREDS_PATH, "w") as f:
-        json.dump({"botToken": tok}, f)
+        json.dump(cfg, f)
     os.chmod(CREDS_PATH, 0o600)
     me = api("GET", "/users/@me")
     print(f"authed as {me.get('username')} ({me.get('id')})")
@@ -151,7 +176,7 @@ def cmd_init() -> None:
 
 def main() -> None:
     raw = sys.argv[1:]
-    agent = os.environ.get("GE_AGENT", "Bob")
+    agent = default_agent()
     args: list = []
     skip = False
     for i, a in enumerate(raw):
