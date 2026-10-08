@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""ge-run: claim/release Games Explained game runs via Discord.
+
+Prevents two agents from working the same game at once. Posts machine-readable
+claim markers to a Discord channel; `claim` refuses if the game is taken.
+
+Talks to the Discord REST API directly (stdlib only, no dependencies).
+
+Usage:
+  ge-run init                      one-time setup: store bot token + allowlist
+  ge-run claim <game> [--agent NAME]    claim a run (fails if already claimed)
+  ge-run done  <game> [--agent NAME]    release a run
+  ge-run status [game]                  show active claims
+
+Env:
+  GE_AGENT           agent name (default: Bob)
+  GE_CLAIMS_CHANNEL  Discord channel id for claims
+                     (default: #game-claims 1557564764165636186)
+  DISCORD_BOT_TOKEN  bot token (or stored via `ge-run init`)
+
+Token precedence: DISCORD_BOT_TOKEN env, then ~/.config/discord-cli/credentials.json
+"""
+import json
+import os
+import re
+import sys
+import urllib.request
+import urllib.error
+
+API = "https://discord.com/api/v10"
+CHANNEL = os.environ.get("GE_CLAIMS_CHANNEL", "1557564764165636186")
+GE_SERVER = "1552311170780766208"
+CFG_DIR = os.path.expanduser("~/.config/discord-cli")
+CREDS_PATH = os.path.join(CFG_DIR, "credentials.json")
+
+CLAIM_RE = re.compile(r"^🔒 CLAIM (\S+) — started by (.+)$")
+DONE_RE = re.compile(r"^🔓 DONE (\S+) — finished by (.+)$")
+
+
+def norm(game: str) -> str:
+    g = game.strip().lower().replace(" ", "-").replace("_", "-")
+    return re.sub(r"[^a-z0-9-]", "", g)
+
+
+def token() -> str:
+    t = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+    if t:
+        return t
+    try:
+        with open(CREDS_PATH) as f:
+            return json.load(f).get("botToken", "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def api(method: str, path: str, body: dict | None = None) -> dict | list:
+    tok = token()
+    if not tok:
+        print("no bot token: set DISCORD_BOT_TOKEN or run `ge-run init`",
+              file=sys.stderr)
+        sys.exit(2)
+    req = urllib.request.Request(
+        API + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method,
+        headers={"Authorization": f"Bot {tok}",
+                 "Content-Type": "application/json",
+                 "User-Agent": "ge-run/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode()[:200]
+        print(f"Discord API {e.code}: {detail}", file=sys.stderr)
+        sys.exit(2)
+
+
+def active_claims(limit: int = 100) -> dict:
+    """game -> (agent, timestamp) for claims with no later DONE (newest first)."""
+    msgs = api("GET", f"/channels/{CHANNEL}/messages?limit={limit}")
+    claimed: dict = {}
+    released: set = set()
+    for m in msgs:
+        content = m.get("content", "")
+        mc = CLAIM_RE.match(content)
+        if mc:
+            game = norm(mc.group(1))
+            if game not in released:
+                claimed.setdefault(game, (mc.group(2), m.get("timestamp", "")))
+            continue
+        md = DONE_RE.match(content)
+        if md:
+            game = norm(md.group(1))
+            released.add(game)
+            claimed.pop(game, None)
+    return claimed
+
+
+def cmd_claim(game: str, agent: str) -> None:
+    game = norm(game)
+    claims = active_claims()
+    if game in claims:
+        other, ts = claims[game]
+        if other == agent:
+            print(f"already claimed by you ({agent}); continuing")
+            return
+        print(f"REFUSED: {game} is already claimed by {other} ({ts})",
+              file=sys.stderr)
+        sys.exit(1)
+    api("POST", f"/channels/{CHANNEL}/messages",
+        {"content": f"🔒 CLAIM {game} — started by {agent}"})
+    print(f"claimed {game} as {agent}")
+
+
+def cmd_done(game: str, agent: str) -> None:
+    game = norm(game)
+    api("POST", f"/channels/{CHANNEL}/messages",
+        {"content": f"🔓 DONE {game} — finished by {agent}"})
+    print(f"released {game}")
+
+
+def cmd_status(game: str | None) -> None:
+    claims = active_claims()
+    if game:
+        game = norm(game)
+        if game in claims:
+            agent, ts = claims[game]
+            print(f"{game}: claimed by {agent} ({ts})")
+        else:
+            print(f"{game}: free")
+    elif claims:
+        for g, (agent, ts) in sorted(claims.items()):
+            print(f"{g}: {agent} ({ts})")
+    else:
+        print("no active claims")
+
+
+def cmd_init() -> None:
+    os.makedirs(CFG_DIR, exist_ok=True)
+    tok = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+    if not tok:
+        tok = input("bot token: ").strip()
+    with open(CREDS_PATH, "w") as f:
+        json.dump({"botToken": tok}, f)
+    os.chmod(CREDS_PATH, 0o600)
+    me = api("GET", "/users/@me")
+    print(f"authed as {me.get('username')} ({me.get('id')})")
+    print(f"claims channel: {CHANNEL} (override with GE_CLAIMS_CHANNEL)")
+
+
+def main() -> None:
+    raw = sys.argv[1:]
+    agent = os.environ.get("GE_AGENT", "Bob")
+    args: list = []
+    skip = False
+    for i, a in enumerate(raw):
+        if skip:
+            skip = False
+            continue
+        if a == "--agent" and i + 1 < len(raw):
+            agent = raw[i + 1]
+            skip = True
+        else:
+            args.append(a)
+    if not args:
+        print(__doc__)
+        sys.exit(2)
+    cmd, *rest = args
+    if cmd == "init" and not rest:
+        cmd_init()
+    elif cmd == "claim" and len(rest) == 1:
+        cmd_claim(rest[0], agent)
+    elif cmd == "done" and len(rest) == 1:
+        cmd_done(rest[0], agent)
+    elif cmd == "status" and len(rest) <= 1:
+        cmd_status(rest[0] if rest else None)
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
