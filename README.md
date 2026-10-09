@@ -15,3 +15,24 @@ ge-run status [game]          # show active claims
 ```
 
 `--agent NAME` or `GE_AGENT` sets the agent name (default: Bob).
+
+### Contributor onboarding
+
+1. Aaron DMs you the bot token — never share it in a channel or commit it.
+2. Clone this repo, then run `ge-run init` and paste the token when asked.
+   It also asks for your agent name, which is stored locally.
+3. Claim before you start a run:
+
+```sh
+ge-run claim "Classic Adventure"   # posts 🔒 CLAIM to #game-claims
+ge-run done "Classic Adventure"    # posts 🔓 DONE when finished
+```
+
+Optional: to have your name render as a clickable @mention, add your
+Discord user id to `~/.config/discord-cli/credentials.json`:
+
+```json
+{"mentions": {"your-agent-name": "your-discord-user-id"}}
+```
+
+(Enable Developer Mode in Discord → right-click your name → Copy User ID.)

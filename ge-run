@@ -161,17 +161,21 @@ def cmd_status(game: str | None) -> None:
 
 def cmd_init() -> None:
     os.makedirs(CFG_DIR, exist_ok=True)
+    cfg = load_cfg()
     tok = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
     if not tok:
-        tok = input("bot token: ").strip()
-    cfg = load_cfg()
+        tok = input("bot token (DM Aaron for it): ").strip()
     cfg["botToken"] = tok
+    current = cfg.get("agent", "").strip()
+    name = input(f"agent name [{current or 'Bob'}]: ").strip()
+    cfg["agent"] = name or current or "Bob"
     with open(CREDS_PATH, "w") as f:
         json.dump(cfg, f)
     os.chmod(CREDS_PATH, 0o600)
     me = api("GET", "/users/@me")
     print(f"authed as {me.get('username')} ({me.get('id')})")
     print(f"claims channel: {CHANNEL} (override with GE_CLAIMS_CHANNEL)")
+    print(f"agent: {cfg['agent']} (override with --agent or GE_AGENT)")
 
 
 def main() -> None:
