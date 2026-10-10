@@ -10,12 +10,13 @@ Talks to the Discord REST API directly (stdlib only, no dependencies).
 
 Usage:
   ge-run init                      one-time setup: store bot token + allowlist
-  ge-run claim <game> [--agent NAME]    claim a run (fails if already claimed)
-  ge-run done  <game> [--agent NAME]    release a run
-  ge-run status [game]                  show active claims
+  ge-run claim <game> [--platform P] [--agent NAME]    claim a run (fails if already claimed)
+  ge-run done  <game> [--platform P] [--agent NAME]    release a run
+  ge-run status [game] [--platform P]                  show active claims
 
 Env:
   GE_AGENT           agent name (default from local config, else Bob)
+  GE_PLATFORM        platform (default c64)
   GE_CLAIMS_CHANNEL  Discord channel id for claims
                      (default: #game-claims 1557564764165636186)
   DISCORD_BOT_TOKEN  bot token (or stored via `ge-run init`)
@@ -35,8 +36,8 @@ GE_SERVER = "1552311170780766208"
 CFG_DIR = os.path.expanduser("~/.config/discord-cli")
 CREDS_PATH = os.path.join(CFG_DIR, "credentials.json")
 
-CLAIM_RE = re.compile(r"^🔒 CLAIM (.+?) — started by (.+)$")
-DONE_RE = re.compile(r"^🔓 DONE (.+?) — finished by (.+)$")
+CLAIM_RE = re.compile(r"^🔒 CLAIM (.+?)(?: \(([a-z0-9]+)\))? — started by (.+)$")
+DONE_RE = re.compile(r"^[🔓🏁] DONE (.+?)(?: \(([a-z0-9]+)\))? — finished by (.+)$")
 
 
 def norm(game: str) -> str:
@@ -47,6 +48,19 @@ def norm(game: str) -> str:
 def display(game: str) -> str:
     """Human-readable name, as typed (whitespace tidied)."""
     return re.sub(r"\s+", " ", game.strip())
+
+
+def platform_of(platform: str | None) -> str:
+    """Normalized platform slug; GE_PLATFORM env, else c64."""
+    return (platform or os.environ.get("GE_PLATFORM", "")).strip().lower() or "c64"
+
+
+def claim_key(platform: str | None, game: str) -> str:
+    """Internal matching key: platform + normalized name, so the same title on
+    two platforms does not collide. Old messages without a platform keep the
+    bare normalized name."""
+    p = (platform or "").strip().lower()
+    return norm(f"{p}/{game}") if p else norm(game)
 
 
 def load_cfg() -> dict:
@@ -98,7 +112,8 @@ def api(method: str, path: str, body: dict | None = None) -> dict | list:
 
 
 def active_claims(limit: int = 100) -> dict:
-    """norm-key -> (display name, agent, timestamp) for claims with no later DONE."""
+    """claim-key -> (platform, display name, agent, timestamp) for claims with
+    no later DONE."""
     msgs = api("GET", f"/channels/{CHANNEL}/messages?limit={limit}")
     claimed: dict = {}
     released: set = set()
@@ -106,55 +121,57 @@ def active_claims(limit: int = 100) -> dict:
         content = m.get("content", "")
         mc = CLAIM_RE.match(content)
         if mc:
-            key = norm(mc.group(1))
+            key = claim_key(mc.group(2), mc.group(1))
             if key not in released:
-                claimed.setdefault(key, (display(mc.group(1)), mc.group(2),
-                                         m.get("timestamp", "")))
+                claimed.setdefault(key, (mc.group(2), display(mc.group(1)),
+                                         mc.group(3), m.get("timestamp", "")))
             continue
         md = DONE_RE.match(content)
         if md:
-            key = norm(md.group(1))
+            key = claim_key(md.group(2), md.group(1))
             released.add(key)
             claimed.pop(key, None)
     return claimed
 
 
-def cmd_claim(game: str, agent: str) -> None:
+def cmd_claim(game: str, platform: str | None, agent: str) -> None:
     name = display(game)
-    key = norm(game)
+    plat = platform_of(platform)
+    key = claim_key(plat, name)
     claims = active_claims()
     if key in claims:
-        dname, other, ts = claims[key]
+        _, dname, other, ts = claims[key]
         if other in (agent, render_agent(agent)):
             print(f"already claimed by you ({agent}); continuing")
             return
-        print(f"REFUSED: {dname} is already claimed by {other} ({ts})",
+        print(f"REFUSED: {dname} ({plat}) is already claimed by {other} ({ts})",
               file=sys.stderr)
         sys.exit(1)
     api("POST", f"/channels/{CHANNEL}/messages",
-        {"content": f"🔒 CLAIM {name} — started by {render_agent(agent)}"})
-    print(f"claimed {name} as {agent}")
+        {"content": f"🔒 CLAIM {name} ({plat}) — started by {render_agent(agent)}"})
+    print(f"claimed {name} ({plat}) as {agent}")
 
 
-def cmd_done(game: str, agent: str) -> None:
+def cmd_done(game: str, platform: str | None, agent: str) -> None:
     name = display(game)
+    plat = platform_of(platform)
     api("POST", f"/channels/{CHANNEL}/messages",
-        {"content": f"🔓 DONE {name} — finished by {render_agent(agent)}"})
-    print(f"released {name}")
+        {"content": f"🏁 DONE {name} ({plat}) — finished by {render_agent(agent)}"})
+    print(f"released {name} ({plat})")
 
 
-def cmd_status(game: str | None) -> None:
+def cmd_status(game: str | None, platform: str | None) -> None:
     claims = active_claims()
     if game:
-        key = norm(game)
+        key = claim_key(platform_of(platform), game)
         if key in claims:
-            name, agent, ts = claims[key]
-            print(f"{name}: claimed by {agent} ({ts})")
+            plat, name, agent, ts = claims[key]
+            print(f"{name} ({plat}): claimed by {agent} ({ts})")
         else:
-            print(f"{display(game)}: free")
+            print(f"{display(game)} ({platform_of(platform)}): free")
     elif claims:
-        for _, (name, agent, ts) in sorted(claims.items()):
-            print(f"{name}: {agent} ({ts})")
+        for _, (plat, name, agent, ts) in sorted(claims.items()):
+            print(f"{name} ({plat}): {agent} ({ts})")
     else:
         print("no active claims")
 
@@ -181,6 +198,7 @@ def cmd_init() -> None:
 def main() -> None:
     raw = sys.argv[1:]
     agent = default_agent()
+    platform = None
     args: list = []
     skip = False
     for i, a in enumerate(raw):
@@ -189,6 +207,9 @@ def main() -> None:
             continue
         if a == "--agent" and i + 1 < len(raw):
             agent = raw[i + 1]
+            skip = True
+        elif a == "--platform" and i + 1 < len(raw):
+            platform = raw[i + 1]
             skip = True
         else:
             args.append(a)
@@ -199,11 +220,11 @@ def main() -> None:
     if cmd == "init" and not rest:
         cmd_init()
     elif cmd == "claim" and len(rest) == 1:
-        cmd_claim(rest[0], agent)
+        cmd_claim(rest[0], platform, agent)
     elif cmd == "done" and len(rest) == 1:
-        cmd_done(rest[0], agent)
+        cmd_done(rest[0], platform, agent)
     elif cmd == "status" and len(rest) <= 1:
-        cmd_status(rest[0] if rest else None)
+        cmd_status(rest[0] if rest else None, platform)
     else:
         print(__doc__)
         sys.exit(2)
