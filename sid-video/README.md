@@ -79,7 +79,10 @@ five times slower.
 - At the end it checks the file: that its sound matches the sound rendered (0 ms), and how far
   after each note the ball lands on the sound rises most, per voice. Notes that start with an
   attack give 0 or 1 ms. A voice that changes pitch under a held note has no attack to find, and
-  then the voices disagree and the script says so instead of warning.
+  then the voices disagree and the script says so instead of warning. Some drivers make each note
+  loudest a frame or more after it starts (Delta's give 20 ms on every voice, Armalyte's Demo
+  33 ms), so it warns only past 45 ms. That is where viewers start to notice sound that comes
+  before the picture; sound that comes after it shows only from about 125 ms (ITU-R BT.1359).
 - The page's encoder (OpenH264 in Chromium) is close to the canvas but not exact: 42-43 dB PSNR,
   and colours within a level or two. `--raw` is exact up to the final x264 pass.
 - Players are numbered in the order they appear on the page. Some pages mount their players

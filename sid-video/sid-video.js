@@ -412,7 +412,10 @@ function writeWav(file, x, SR) {                                     // 32-bit f
 // the notes the ball lands on, for each voice, against the offset from the landing. That one
 // depends on the music: notes that start with an attack peak within a few ms (Master of Magic:
 // 0 to 1), but a voice that changes pitch under a held note has no attack to find (Shadowfire's
-// title: +34, -26 and -49), so it only warns when the voices agree.
+// title: +34, -26 and -49), so it only warns when the voices agree. Some drivers make each note
+// loudest a frame or more after it starts (Delta: +20 ms on every voice; Armalyte's Demo: +33),
+// so it warns past 45 ms, where viewers start to notice sound early (ITU-R BT.1359; sound late
+// shows only from about 125 ms).
 function syncCheck(mp4, voiceTimes, ref) {
   const raw = execFileSync('ffmpeg', ['-v', 'error', '-i', mp4, '-map', '0:a', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-'],
     { maxBuffer: 1 << 30 });
@@ -569,7 +572,7 @@ async function main() {
   if (sync.voices.length) console.log('the sound rises most this long after the ball lands: ' +
     sync.voices.map((v, i) => `${v.best} ms over ${v.used} notes`).join(', ') +
     (sync.agree ? '' : ' (the voices disagree: this music has notes without clear attacks)'));
-  if (sync.agree && Math.abs(sync.best) > 10) console.log('warning: the voices agree on more than half a driver frame; check the file');
+  if (sync.agree && Math.abs(sync.best) > 45) console.log('warning: the voices agree on a lag viewers may notice; check the file');
   if (!a.keep) fs.rmSync(work, { recursive: true, force: true });
   if (site) site.srv.close();
 }
