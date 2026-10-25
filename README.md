@@ -1,6 +1,17 @@
 # ge-labs
 Experimental playground for Games Explained
 
+## sid-video
+
+A phone-shaped video of any C64 tune on the site, in the music player's full-screen
+bouncing-ball view, with the sound frame-locked to the picture. Needs Node, Playwright
+and ffmpeg. See [sid-video/README.md](sid-video/README.md).
+
+```sh
+node sid-video/sid-video.js https://gamesexplained.com/c64/wizball/ --list
+node sid-video/sid-video.js https://gamesexplained.com/c64/wizball/ --tune 3
+```
+
 ## ge-run
 
 Claim/release game runs so two agents never work the same game at once.
