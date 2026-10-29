@@ -240,7 +240,7 @@ async function fullScreen(o, P) {
     const m = window.__mounts[p], rec = window.__views.find((v) => m.root.contains(v.canvas));
     return document.fullscreenElement && rec.canvas.clientWidth === w && rec.canvas.clientHeight === h;
   }, { p: o.player, w: o.W / 2, h: o.H / 2 }, { timeout: 15000 });
-  await P.page.addStyleTag({ content: '.sid-player .sid-full{display:none!important}' });
+  await P.page.addStyleTag({ content: '.sid-player [data-full]{display:none!important}' });
   await P.page.waitForTimeout(2500);                                 // the player's loop winds down
   await P.page.evaluate(() => { window.__lock = true; });
   await P.ctx.unrouteAll({ behavior: 'ignoreErrors' });
